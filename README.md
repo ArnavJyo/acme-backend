@@ -92,7 +92,7 @@ A scalable Flask-based backend application for importing and managing products f
 ### 1. Start the Flask Application
 
 ```bash
-python run.py
+python app.py
 ```
 
 Or using gunicorn for production:
@@ -100,7 +100,7 @@ Or using gunicorn for production:
 gunicorn -w 4 -b 0.0.0.0:5000 app:create_app()
 ```
 
-The application will be available at `http://localhost:5000`
+The application will be available at `http://localhost:5001`
 
 ### 2. Start the Celery Worker
 
@@ -194,44 +194,5 @@ Webhook payload format:
 4. **Database Indexing**: SKU field is indexed for fast lookups and case-insensitive uniqueness
 5. **Connection Pooling**: SQLAlchemy connection pooling configured for optimal database performance
 
-## Development
-
-### Project Structure
-```
-acme-backend/
-├── app.py                 # Flask application factory
-├── config.py              # Configuration settings
-├── models.py              # Database models
-├── routes.py              # API routes
-├── tasks.py               # Celery async tasks
-├── celery_app.py          # Celery configuration
-├── webhook_service.py     # Webhook triggering service
-├── run.py                 # Flask run script
-├── run_celery.py          # Celery worker script
-├── requirements.txt       # Python dependencies
-├── static/
-│   └── index.html         # Frontend UI
-└── uploads/               # CSV upload directory (created automatically)
 ```
 
-## Troubleshooting
-
-### Celery Worker Not Processing Tasks
-- Ensure CloudAMQP/RabbitMQ is running and accessible
-- Check that `CELERY_BROKER_URL` is correctly set in `.env`
-- Verify the worker is connected: `celery -A celery_app inspect active`
-
-### Database Connection Issues
-- Verify `DATABASE_URL` is correct in `.env`
-- Ensure PostgreSQL is running and accessible
-- Check network connectivity to Supabase if using cloud database
-
-### CSV Import Fails
-- Check file format matches expected CSV structure
-- Ensure SKU column exists and is not empty
-- Review Celery worker logs for detailed error messages
-- Check available disk space in `uploads/` directory
-
-## License
-
-This project is part of the Acme Inc. product importer system.
