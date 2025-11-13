@@ -147,7 +147,7 @@
         .progress-fill {
             height: 100%;
             background: linear-gradient(90deg, #3498db, #2980b9);
-            transition: width 0.3s;
+            transition: width 0.1s ease-out;
             display: flex;
             align-items: center;
             justify-content: center;
@@ -432,7 +432,7 @@
     </div>
     
     <script>
-        const API_BASE = 'http://localhost:5000/api';
+        const API_BASE = 'http://localhost:5001/api';
         let currentProductId = null;
         let currentWebhookId = null;
         let currentPage = 1;
@@ -475,12 +475,34 @@
                 
                 if (response.ok) {
                     document.getElementById('uploadStatus').style.display = 'block';
-                    trackUploadProgress(data.task_id);
+                    // Immediately check status once, then start SSE
+                    checkProgressOnce(data.task_id).then(() => {
+                        trackUploadProgress(data.task_id);
+                    });
                 } else {
                     alert('Upload failed: ' + data.error);
                 }
             } catch (error) {
                 alert('Error: ' + error.message);
+            }
+        }
+        
+        // Check progress once (fallback if SSE doesn't work)
+        async function checkProgressOnce(taskId) {
+            try {
+                const response = await fetch(`${API_BASE}/upload/progress/${taskId}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    updateProgress(data, () => {
+                        // Stop polling if task is complete
+                        if (window.currentPollInterval) {
+                            clearInterval(window.currentPollInterval);
+                            window.currentPollInterval = null;
+                        }
+                    });
+                }
+            } catch (error) {
+                console.error('Error checking progress:', error);
             }
         }
         
@@ -490,41 +512,150 @@
                 uploadEventSource.close();
             }
             
+            // Also set up a fallback polling mechanism in case SSE fails
+            let pollInterval = null;
+            let sseWorking = false;
+            
+            // Store interval reference globally so we can clean it up
+            window.currentPollInterval = null;
+            
             uploadEventSource = new EventSource(`${API_BASE}/upload/progress/${taskId}/stream`);
             
             uploadEventSource.onmessage = (event) => {
-                const data = JSON.parse(event.data);
-                updateProgress(data);
+                try {
+                    sseWorking = true;  // Mark SSE as working
+                    if (pollInterval) {
+                        clearInterval(pollInterval);  // Stop polling if SSE works
+                        pollInterval = null;
+                        window.currentPollInterval = null;
+                    }
+                    
+                    const data = JSON.parse(event.data);
+                    if (data.error) {
+                        console.error('Progress error:', data.error);
+                        const statusMessage = document.getElementById('statusMessage');
+                        if (statusMessage) {
+                            statusMessage.className = 'status error';
+                            statusMessage.textContent = `Error: ${data.error}`;
+                        }
+                    } else {
+                        updateProgress(data, () => {
+                            // Cleanup callback when done
+                            if (pollInterval) {
+                                clearInterval(pollInterval);
+                                pollInterval = null;
+                                window.currentPollInterval = null;
+                            }
+                        });
+                    }
+                } catch (error) {
+                    console.error('Error parsing progress data:', error);
+                }
             };
             
-            uploadEventSource.onerror = () => {
-                uploadEventSource.close();
+            uploadEventSource.onerror = (error) => {
+                console.error('SSE connection error:', error);
+                // If SSE fails, fall back to polling
+                if (!pollInterval && !sseWorking) {
+                    pollInterval = setInterval(() => {
+                        checkProgressOnce(taskId);
+                    }, 500);  // Poll every 500ms
+                    window.currentPollInterval = pollInterval;
+                }
             };
+            
+            uploadEventSource.onopen = () => {
+                console.log('SSE connection opened');
+                sseWorking = true;
+            };
+            
+            // Fallback: if SSE doesn't connect within 2 seconds, start polling
+            setTimeout(() => {
+                if (!sseWorking && !pollInterval) {
+                    console.log('SSE not working, falling back to polling');
+                    pollInterval = setInterval(() => {
+                        checkProgressOnce(taskId);
+                    }, 500);
+                    window.currentPollInterval = pollInterval;
+                }
+            }, 2000);
         }
         
-        function updateProgress(data) {
+        function updateProgress(data, onComplete) {
             const progressFill = document.getElementById('progressFill');
             const statusMessage = document.getElementById('statusMessage');
             
-            progressFill.style.width = `${data.progress}%`;
-            progressFill.textContent = `${data.progress}%`;
+            // Ensure we have valid data
+            if (!data) {
+                console.error('No data received');
+                return;
+            }
             
+            // Update progress bar with smooth animation
+            const progress = Math.min(Math.max(data.progress || 0, 0), 100); // Clamp between 0-100
+            progressFill.style.width = `${progress}%`;
+            progressFill.textContent = `${progress}%`;
+            
+            // Update status message based on job status
             let message = '';
-            if (data.status === 'pending') {
+            const status = data.status || 'pending';
+            const processed = data.processed_records || 0;
+            const total = data.total_records || 0;
+            
+            if (status === 'pending') {
                 message = 'Preparing to process...';
-            } else if (data.status === 'processing') {
-                message = `Processing: ${data.processed_records}/${data.total_records} records`;
-            } else if (data.status === 'completed') {
-                message = `Import completed! Processed ${data.processed_records} records.`;
+                statusMessage.className = 'status info';
+            } else if (status === 'processing') {
+                if (total > 0) {
+                    message = `Processing: ${processed.toLocaleString()}/${total.toLocaleString()} records (${progress}%)`;
+                } else {
+                    message = `Processing: ${processed.toLocaleString()} records...`;
+                }
+                statusMessage.className = 'status info';
+            } else if (status === 'completed') {
+                message = `Import completed! Processed ${processed.toLocaleString()} record${processed !== 1 ? 's' : ''}.`;
                 statusMessage.className = 'status success';
-                uploadEventSource.close();
-            } else if (data.status === 'failed') {
+                if (uploadEventSource) {
+                    uploadEventSource.close();
+                    uploadEventSource = null;
+                }
+                if (window.currentPollInterval) {
+                    clearInterval(window.currentPollInterval);
+                    window.currentPollInterval = null;
+                }
+                if (onComplete) onComplete();
+            } else if (status === 'failed') {
                 message = `Import failed: ${data.error_message || 'Unknown error'}`;
                 statusMessage.className = 'status error';
-                uploadEventSource.close();
+                if (uploadEventSource) {
+                    uploadEventSource.close();
+                    uploadEventSource = null;
+                }
+                if (window.currentPollInterval) {
+                    clearInterval(window.currentPollInterval);
+                    window.currentPollInterval = null;
+                }
+                if (onComplete) onComplete();
+            } else {
+                message = `Status: ${status}`;
+                statusMessage.className = 'status info';
             }
             
             statusMessage.textContent = message;
+            
+            // Debug logging (only log every 5% or on status change to avoid spam)
+            const lastLoggedProgress = window.lastLoggedProgress || -1;
+            if (Math.abs(progress - lastLoggedProgress) >= 5 || status !== (window.lastStatus || '')) {
+                console.log('Progress update:', {
+                    status: status,
+                    progress: progress + '%',
+                    processed: processed,
+                    total: total,
+                    percentage: progress
+                });
+                window.lastLoggedProgress = progress;
+                window.lastStatus = status;
+            }
         }
         
         // Products

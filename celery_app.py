@@ -6,7 +6,8 @@ def make_celery(app):
     celery = Celery(
         app.import_name,
         broker=Config.CELERY_BROKER_URL,
-        backend=Config.CELERY_RESULT_BACKEND
+        backend=Config.CELERY_RESULT_BACKEND,
+        include=['tasks']  
     )
     
     celery.conf.update(
@@ -22,12 +23,14 @@ def make_celery(app):
     )
     
     return celery
+import multiprocessing
+multiprocessing.set_start_method('spawn', force=True)
 
-# Create a default Celery instance
 celery = Celery(
     'acme_backend',
     broker=Config.CELERY_BROKER_URL,
-    backend=Config.CELERY_RESULT_BACKEND
+    backend=Config.CELERY_RESULT_BACKEND,
+    include=['tasks']
 )
 
 celery.conf.update(

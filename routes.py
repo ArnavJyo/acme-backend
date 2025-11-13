@@ -69,26 +69,58 @@ def register_routes(app):
         """Server-Sent Events stream for real-time progress updates"""
         def generate():
             import time
+            last_progress = -1
+            last_status = None
+            
             while True:
-                job = ImportJob.query.filter_by(task_id=task_id).first()
-                if not job:
-                    yield f"data: {json.dumps({'error': 'Job not found'})}\n\n"
-                    break
-                
-                data = job.to_dict()
-                yield f"data: {json.dumps(data)}\n\n"
-                
-                if job.status in ['completed', 'failed']:
-                    break
-                
-                time.sleep(0.5)  # Update every 500ms
+                try:
+                    # Create a new session for each query to ensure fresh data
+                    # This prevents SQLAlchemy from caching stale data
+                    db.session.expire_all()
+                    
+                    # Query with fresh session state - use with_for_update to ensure we get latest data
+                    job = ImportJob.query.filter_by(task_id=task_id).first()
+                    
+                    if not job:
+                        yield f"data: {json.dumps({'error': 'Job not found'})}\n\n"
+                        break
+                    
+                    # Convert to dict to ensure we get current values
+                    data = job.to_dict()
+                    current_progress = data.get('progress', 0)
+                    current_status = data.get('status', 'pending')
+                    
+                    # Only send update if progress or status changed (reduces unnecessary updates)
+                    if current_progress != last_progress or current_status != last_status:
+                        yield f"data: {json.dumps(data)}\n\n"
+                        last_progress = current_progress
+                        last_status = current_status
+                    
+                    # Check status after getting data
+                    if current_status in ['completed', 'failed']:
+                        # Send final update
+                        yield f"data: {json.dumps(data)}\n\n"
+                        break
+                    
+                    # Update more frequently (50ms) for smoother progress bar updates
+                    time.sleep(0.05)
+                    
+                except Exception as e:
+                    # Log error and send error message
+                    import traceback
+                    error_trace = traceback.format_exc()
+                    print(f"SSE stream error: {e}\n{error_trace}")
+                    yield f"data: {json.dumps({'error': str(e)})}\n\n"
+                    time.sleep(1)  # Wait a bit before retrying
         
         return Response(
             stream_with_context(generate()),
             mimetype='text/event-stream',
             headers={
                 'Cache-Control': 'no-cache',
-                'X-Accel-Buffering': 'no'
+                'X-Accel-Buffering': 'no',
+                'Connection': 'keep-alive',
+                'X-Content-Type-Options': 'nosniff'
             }
         )
     
